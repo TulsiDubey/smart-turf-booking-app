@@ -1,35 +1,47 @@
 // app/(tabs)/turf/[id].jsx
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, Alert, Modal } from 'react-native';
-import { useLocalSearchParams, useNavigation } from 'expo-router';
+import React, { useState, useEffect, useCallback } from 'react';
+import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, Alert, Modal, ActivityIndicator } from 'react-native';
+import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { PrimaryButton } from '../../../components/PrimaryButton';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const API_URL = 'http://192.168.137.155:3000';
+// ⚠️ Make sure this IP address is correct!
+const API_URL = 'http://192.168.75.155:3000'; 
 const DEFAULT_IMAGE = 'https://placehold.co/600x400/22c55e/ffffff?text=Image+Not+Available';
 
 export default function TurfDetailScreen() {
-    const { id, name } = useLocalSearchParams();
+    const { id, name, price_per_hour, location, rating, image_url } = useLocalSearchParams();
     const navigation = useNavigation();
+    const router = useRouter();
     
-    // We will assume turf details are fetched or passed fully. For now, using passed name.
-    // In a real app, you would fetch the full turf object by `id`.
-    const [turf, setTurf] = useState({ id, name, price_per_hour: '1200', rating: '4.5', location: 'Unknown' });
+    // Initialize state with all passed params for immediate display
+    const [turf] = useState({ id, name, price_per_hour, location, rating, image_url });
     const [slotsData, setSlotsData] = useState([]);
+    const [loadingSlots, setLoadingSlots] = useState(true);
     const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
     const [modalVisible, setModalVisible] = useState(false);
     const [bookingDetails, setBookingDetails] = useState(null);
+    const [isBooking, setIsBooking] = useState(false);
+
+    const fetchSlots = useCallback(async () => {
+        setLoadingSlots(true);
+        try {
+            const response = await fetch(`${API_URL}/api/bookings/slots/${id}?date=${selectedDate}`);
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || 'Failed to fetch slots.');
+            setSlotsData(data.slots || []);
+        } catch (error) { 
+            console.error(error); 
+            Alert.alert("Error", `Could not connect to the server. ${error.message}`);
+        } finally {
+            setLoadingSlots(false);
+        }
+    }, [id, selectedDate]);
 
     useEffect(() => {
         navigation.setOptions({ title: name });
-        const fetchSlots = async () => {
-            try {
-                const response = await fetch(`${API_URL}/api/bookings/slots/${id}?date=${selectedDate}`);
-                setSlotsData((await response.json()).slots || []);
-            } catch (error) { console.error(error); }
-        };
         fetchSlots();
-    }, [id, name, selectedDate]);
+    }, [name, fetchSlots]); // navigation is not needed as a dependency
     
     const handleShowBookingModal = (time, full_time) => {
         setBookingDetails({ date: selectedDate, time, full_time });
@@ -37,15 +49,51 @@ export default function TurfDetailScreen() {
     };
 
     const handleConfirmBooking = async () => {
+        setIsBooking(true);
         const token = await AsyncStorage.getItem('userToken');
-        //... logic to post booking
-        Alert.alert("Success", "Booking confirmed!");
-        setModalVisible(false);
+        if (!token) {
+            Alert.alert("Authentication Error", "You must be logged in to book.", [
+                { text: "OK", onPress: () => router.replace('/login') }
+            ]);
+            setIsBooking(false);
+            return;
+        }
+
+        const startTime = `${bookingDetails.date}T${bookingDetails.full_time}:00.000Z`;
+
+        try {
+            const response = await fetch(`${API_URL}/api/bookings`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify({
+                    turf_id: turf.id,
+                    start_time: startTime,
+                    total_price: turf.price_per_hour,
+                })
+            });
+
+            const result = await response.json();
+
+            if (response.status === 409) { // Slot already booked
+                Alert.alert("Booking Failed", "Sorry, this slot was just booked. The list will now refresh.");
+            } else if (!response.ok) {
+                throw new Error(result.error || "An unknown error occurred.");
+            } else {
+                Alert.alert("Success", "Booking confirmed! You can view it in 'My Bookings'.");
+            }
+        
+        } catch (error) {
+            Alert.alert("Error", error.message);
+        } finally {
+            setModalVisible(false);
+            setIsBooking(false);
+            fetchSlots(); // Refresh the slot list after any booking attempt
+        }
     };
 
     return (
         <ScrollView style={styles.container}>
-            <Image source={{ uri: DEFAULT_IMAGE }} style={styles.headerImage} />
+            <Image source={{ uri: turf.image_url || DEFAULT_IMAGE }} style={styles.headerImage} />
             <View style={styles.content}>
                 <Text style={styles.title}>{turf.name}</Text>
                 <Text style={styles.location}>📍 {turf.location}</Text>
@@ -56,7 +104,7 @@ export default function TurfDetailScreen() {
             </View>
             
             <Text style={styles.sectionTitle}>Select a Slot</Text>
-            {/* Date Tabs */}
+            
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.dateTabsContainer}>
                 {[0, 1, 2, 3, 4].map(offset => {
                     const d = new Date();
@@ -76,19 +124,22 @@ export default function TurfDetailScreen() {
                 })}
             </ScrollView>
 
-            {/* Slots Grid */}
-            <View style={styles.slotsGrid}>
-                {slotsData.map(item => (
-                    <TouchableOpacity
-                        key={item.time}
-                        style={[styles.slot, !item.available && styles.slotUnavailable]}
-                        disabled={!item.available}
-                        onPress={() => handleShowBookingModal(item.time, item.full_time)}
-                    >
-                        <Text style={[styles.slotText, !item.available && styles.slotTextUnavailable]}>{item.time}</Text>
-                    </TouchableOpacity>
-                ))}
-            </View>
+            {loadingSlots ? (
+                <ActivityIndicator size="large" color="#10b981" style={{ marginTop: 20 }} />
+            ) : (
+                <View style={styles.slotsGrid}>
+                    {slotsData.length > 0 ? slotsData.map(item => (
+                        <TouchableOpacity
+                            key={item.time}
+                            style={[styles.slot, !item.available && styles.slotUnavailable]}
+                            disabled={!item.available}
+                            onPress={() => handleShowBookingModal(item.time, item.full_time)}
+                        >
+                            <Text style={[styles.slotText, !item.available && styles.slotTextUnavailable]}>{item.time}</Text>
+                        </TouchableOpacity>
+                    )) : <Text style={styles.emptyText}>No slots available for this day.</Text>}
+                </View>
+            )}
             
             <Modal visible={modalVisible} transparent={true} animationType="slide">
                 <View style={styles.modalOverlay}>
@@ -97,7 +148,7 @@ export default function TurfDetailScreen() {
                         <Text style={styles.modalText}>Turf: {turf.name}</Text>
                         <Text style={styles.modalText}>Date: {bookingDetails?.date}</Text>
                         <Text style={styles.modalText}>Time: {bookingDetails?.time}</Text>
-                        <PrimaryButton title="Confirm & Pay" onPress={handleConfirmBooking} />
+                        <PrimaryButton title="Confirm & Pay" onPress={handleConfirmBooking} isLoading={isBooking} />
                         <TouchableOpacity onPress={() => setModalVisible(false)}>
                             <Text style={styles.cancelText}>Cancel</Text>
                         </TouchableOpacity>
@@ -123,8 +174,8 @@ const styles = StyleSheet.create({
     dateTabSelected: { backgroundColor: '#10b981' },
     dateTabText: { color: '#374151', fontWeight: '500' },
     dateTabTextSelected: { color: 'white' },
-    slotsGrid: { flexDirection: 'row', flexWrap: 'wrap', padding: 20, justifyContent: 'space-around' },
-    slot: { width: '30%', paddingVertical: 16, backgroundColor: '#eefcf8', borderRadius: 12, alignItems: 'center', marginBottom: 10, borderWidth: 1, borderColor: '#a7f3d0' },
+    slotsGrid: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 15, paddingTop: 10, justifyContent: 'space-between' },
+    slot: { width: '31%', paddingVertical: 16, backgroundColor: '#eefcf8', borderRadius: 12, alignItems: 'center', marginBottom: 12, borderWidth: 1, borderColor: '#a7f3d0' },
     slotUnavailable: { backgroundColor: '#f1f5f9', borderColor: '#e2e8f0' },
     slotText: { color: '#065f46', fontWeight: '600' },
     slotTextUnavailable: { color: '#94a3b8', textDecorationLine: 'line-through' },
@@ -133,4 +184,5 @@ const styles = StyleSheet.create({
     modalTitle: { fontSize: 22, fontWeight: 'bold', marginBottom: 15 },
     modalText: { fontSize: 16, marginBottom: 10 },
     cancelText: { color: 'red', marginTop: 15 },
+    emptyText: { textAlign: 'center', width: '100%', marginTop: 20, fontSize: 16, color: '#6b7280' },
 });

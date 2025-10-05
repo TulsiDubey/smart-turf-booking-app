@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, Image, ActivityIndicator, Alert } from 'react-native';
 import { Link } from 'expo-router';
 
-const API_URL = 'http://192.168.137.155:3000'; // Remember to use your IP!
+const API_URL = 'http://192.168.75.155:3000'; // Remember to use your IP!
 const DEFAULT_IMAGE = 'https://placehold.co/600x400/22c55e/ffffff?text=Image+Not+Available';
 
 const TurfCard = ({ turf }) => (

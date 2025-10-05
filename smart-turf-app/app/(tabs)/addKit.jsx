@@ -3,9 +3,10 @@ import React, { useState } from 'react';
 import { Alert, View, StyleSheet } from 'react-native';
 import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { AddEntityForm } from '../../components/AddEntityForm';
+// FIXED: Changed to a default import without curly braces {}
+import AddEntityForm from '../../components/AddEntityForm';
 
-const API_URL = 'http://192.168.137.155:3000';
+const API_URL = 'http://192.168.75.155:3000';
 
 export default function AddKitScreen() {
   const [isLoading, setIsLoading] = useState(false);
@@ -15,17 +16,35 @@ export default function AddKitScreen() {
     { name: 'name', placeholder: 'Kit Name (e.g., Cricket Kit)' },
     { name: 'description', placeholder: 'Description' },
     { name: 'price_per_hour', placeholder: 'Price per Hour', type: 'number' },
-    { name: 'image_url', placeholder: 'Image URL (Optional)' },
   ];
 
-  const handleSubmit = async (data) => {
+  const handleSubmit = async (formDataFromChild) => {
+    const { imageUri, ...textData } = formDataFromChild;
+
+    if (!imageUri) {
+      Alert.alert("Image Required", "Please pick an image for the kit.");
+      return;
+    }
+    
     setIsLoading(true);
     const token = await AsyncStorage.getItem('userToken');
+    const formData = new FormData();
+
+    Object.keys(textData).forEach(key => {
+      formData.append(key, textData[key]);
+    });
+
+    const filename = imageUri.split('/').pop();
+    const match = /\.(\w+)$/.exec(filename);
+    const type = match ? `image/${match[1]}` : `image`;
+
+    formData.append('image', { uri: imageUri, name: filename, type });
+
     try {
       const response = await fetch(`${API_URL}/api/kits`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify(data),
+        headers: { 'Authorization': `Bearer ${token}` },
+        body: formData,
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "Failed to add kit.");
@@ -52,8 +71,5 @@ export default function AddKitScreen() {
 }
 
 const styles = StyleSheet.create({
-    container: {
-        flex: 1,
-        backgroundColor: '#f9fafb',
-    },
+    container: { flex: 1, backgroundColor: '#f9fafb' },
 });

@@ -4,7 +4,7 @@ import { View, Text, StyleSheet, FlatList, Image, Alert, ActivityIndicator, Pres
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useIsFocused } from '@react-navigation/native';
 
-const API_URL = 'http://192.168.137.155:3000';
+const API_URL = 'http://192.168.75.155:3000';
 const DEFAULT_IMAGE = 'https://placehold.co/600x400/22c55e/ffffff?text=Image+Not+Available';
 
 export default function BookingHistoryScreen() {

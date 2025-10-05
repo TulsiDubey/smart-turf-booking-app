@@ -1,11 +1,16 @@
-require('dotenv').config(); // Load environment variables from .env file
+// Load environment variables from .env file
+require('dotenv').config();
 
+// --- Imports ---
 const express = require('express');
 const { Pool } = require('pg');
 const cors = require('cors');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
+const multer = require('multer');
+const path = require('path');
 
+// --- App Initialization ---
 const app = express();
 const port = process.env.PORT || 3000;
 
@@ -13,60 +18,130 @@ const port = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET;
 const BCRYPT_SALT_ROUNDS = 10;
 
-// ⚠️ Security: Ensure JWT_SECRET is set in production
 if (!JWT_SECRET) {
     console.error("FATAL ERROR: JWT_SECRET environment variable is not set.");
-    process.exit(1); // Exit the application if the secret is not configured
+    process.exit(1);
 }
 
 // --- Database Configuration ---
 const pool = new Pool({
-  user: process.DB_USER || 'postgres',
-  host: process.DB_HOST || 'localhost',
-  database: process.DB_NAME || 'smart-turf-db',
-  password: process.DB_PASSWORD || 'Tulsi@2211', // Load from .env file in production
-  port: process.DB_PORT || 5432,
+    user: process.env.DB_USER || 'postgres',
+    host: process.env.DB_HOST || 'localhost',
+    database: process.env.DB_NAME || 'smart-turf-db',
+    password: process.env.DB_PASSWORD || 'your_password_here', // ⚠️ Replace with your actual password
+    port: process.env.DB_PORT || 5432,
 });
 
-// Check database connection on startup
-console.log(`Attempting to connect to database "${pool.options.database}" on ${pool.options.host} as user "${pool.options.user}"...`);
 pool.query('SELECT NOW()', (err, res) => {
-  if (err) {
-    console.error('❌ Error connecting to the database:', err.stack);
-  } else {
-    console.log('✅ Database connected successfully at:', res.rows[0].now);
-  }
+    if (err) {
+        console.error('❌ Error connecting to the database:', err.stack);
+    } else {
+        console.log('✅ Database connected successfully at:', res.rows[0].now);
+    }
 });
 
 // --- Middleware ---
-app.use(cors()); // For production, configure this more strictly
+app.use(cors());
 app.use(express.json());
+// Serve uploaded files statically
+app.use('/uploads', express.static('uploads'));
 
+// --- File Upload (Multer) Configuration ---
+const storage = multer.diskStorage({
+    destination: './uploads/',
+    filename: function(req, file, cb) {
+        cb(null, file.fieldname + '-' + Date.now() + path.extname(file.originalname));
+    }
+});
+
+const upload = multer({
+    storage: storage,
+    limits: { fileSize: 1000000 }, // 1MB file size limit
+    fileFilter: function(req, file, cb) {
+        const filetypes = /jpeg|jpg|png|gif/;
+        const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
+        const mimetype = filetypes.test(file.mimetype);
+        if (mimetype && extname) {
+            return cb(null, true);
+        } else {
+            cb('Error: You can only upload image files!');
+        }
+    }
+}).single('image'); // 'image' is the name of the form field on the frontend
+
+// --- Helper Functions ---
+
+/**
+ * Middleware to authenticate JWT token.
+ * It verifies the token from the Authorization header and attaches the user payload to req.user.
+ */
 const authenticateToken = (req, res, next) => {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1]; // Format: "Bearer TOKEN"
 
     if (token == null) {
-        return res.status(401).json({ error: 'Access denied. No token provided.' });
+        return res.status(401).json({ error: "A token is required for authentication" });
     }
 
     jwt.verify(token, JWT_SECRET, (err, user) => {
         if (err) {
-            return res.status(403).json({ error: 'Access denied. Invalid token.' });
+            return res.status(403).json({ error: "Token is not valid" });
         }
-        req.user = user; // Add decoded user payload to the request object
-        next();
+        req.user = user;
+        next(); // Proceed to the next middleware or route handler
     });
 };
 
-// --- Helper for Consistent Error Response ---
+/**
+ * Sends a standardized JSON error response.
+ * @param {object} res - The Express response object.
+ * @param {number} statusCode - The HTTP status code.
+ * @param {string} message - The error message.
+ */
 const sendError = (res, statusCode, message) => {
     return res.status(statusCode).json({ error: message });
 };
 
-// --- API Routes ---
 
-// 1. Authentication
+/*
+================================================================================================
+|                                       DATABASE SCHEMA                                        |
+| -------------------------------------------------------------------------------------------- |
+|  Run these SQL commands in your PostgreSQL database to create the necessary tables.          |
+|  You should already have `users`, `turfs`, `kits`, and `matches` tables from previous steps. |
+================================================================================================
+
+-- Table for storing turf bookings
+CREATE TABLE bookings (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    turf_id INTEGER NOT NULL REFERENCES turfs(id),
+    start_time TIMESTAMP WITH TIME ZONE NOT NULL,
+    end_time TIMESTAMP WITH TIME ZONE NOT NULL,
+    total_price NUMERIC(10, 2) NOT NULL,
+    status VARCHAR(50) DEFAULT 'confirmed', -- e.g., confirmed, cancelled
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(turf_id, start_time) -- A turf cannot be booked at the same start time twice
+);
+
+-- Table for tracking participants in a match
+CREATE TABLE match_participants (
+    id SERIAL PRIMARY KEY,
+    match_id INTEGER NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    joined_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(match_id, user_id) -- A user can only join a specific match once
+);
+
+*/
+
+//===============================================================================================
+//                                       API ROUTES
+//===============================================================================================
+
+// --- 1. Authentication ---
+
+// Register a new user
 app.post('/api/auth/register', async (req, res) => {
     const { name, email, password } = req.body;
     if (!name || !email || !password) {
@@ -75,19 +150,19 @@ app.post('/api/auth/register', async (req, res) => {
     try {
         const hashedPassword = await bcrypt.hash(password, BCRYPT_SALT_ROUNDS);
         const newUser = await pool.query(
-            'INSERT INTO users (name, email, password_hash) VALUES ($1, $2, $3) RETURNING id, name, email',
-            [name, email, hashedPassword]
+            'INSERT INTO users (name, email, password_hash) VALUES ($1, $2, $3) RETURNING id, name, email', [name, email, hashedPassword]
         );
         res.status(201).json(newUser.rows[0]);
     } catch (error) {
-        console.error("Registration Error:", error);
-        if (error.code === '23505') {
+        if (error.code === '23505') { // Unique violation
             return sendError(res, 409, 'User with this email already exists.');
         }
+        console.error("Registration Error:", error);
         return sendError(res, 500, 'Internal server error during registration.');
     }
 });
 
+// Log in a user
 app.post('/api/auth/login', async (req, res) => {
     const { email, password } = req.body;
     if (!email || !password) {
@@ -103,7 +178,7 @@ app.post('/api/auth/login', async (req, res) => {
         if (!isMatch) {
             return sendError(res, 401, 'Invalid credentials.');
         }
-        const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '1d' });
+        const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
         res.json({ token, user: { id: user.id, name: user.name, email: user.email } });
     } catch (error) {
         console.error("Login Error:", error);
@@ -111,228 +186,245 @@ app.post('/api/auth/login', async (req, res) => {
     }
 });
 
-// 2. Turfs
+// --- 2. Turfs ---
+
+// Get all turfs
 app.get('/api/turfs', async (req, res) => {
     try {
-        const allTurfs = await pool.query('SELECT * FROM turfs ORDER BY rating DESC');
+        const allTurfs = await pool.query('SELECT * FROM turfs ORDER BY rating DESC, name ASC');
         res.json(allTurfs.rows);
     } catch (error) {
         console.error("Get Turfs Error:", error);
-        return sendError(res, 500, 'Internal server error.');
+        return sendError(res, 500, 'Failed to fetch turfs.');
     }
 });
 
-app.post('/api/turfs', authenticateToken, async (req, res) => {
-    const { name, location, price_per_hour, image_url, latitude, longitude } = req.body;
-    if (!name || !location || !price_per_hour || latitude === undefined || longitude === undefined) {
-        return sendError(res, 400, 'Missing required fields: name, location, price, latitude, and longitude.');
-    }
+// Add a new turf (requires authentication and image upload)
+app.post('/api/turfs', authenticateToken, (req, res) => {
+    upload(req, res, async (err) => {
+        if (err) return sendError(res, 400, err);
+
+        const { name, location, price_per_hour, latitude, longitude } = req.body;
+        if (!name || !location || !price_per_hour) {
+            return sendError(res, 400, 'Missing required fields: name, location, and price.');
+        }
+        
+        // Construct the full URL for the uploaded image
+        const imageUrl = req.file ? `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}` : null;
+
+        try {
+            const newTurf = await pool.query(
+                'INSERT INTO turfs (name, location, price_per_hour, image_url, latitude, longitude, rating) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *', [name, location, price_per_hour, imageUrl, latitude, longitude, 0] // Initial rating
+            );
+            res.status(201).json(newTurf.rows[0]);
+        } catch (error) {
+            console.error("Add Turf Error:", error);
+            return sendError(res, 500, 'Failed to add new turf.');
+        }
+    });
+});
+
+// --- 3. Kits ---
+
+// Get all available kits
+app.get('/api/kits', async (req, res) => {
     try {
-        const newTurf = await pool.query(
-            'INSERT INTO turfs (name, location, price_per_hour, image_url, latitude, longitude, rating) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
-            [name, location, price_per_hour, image_url || null, latitude, longitude, 0]
-        );
-        res.status(201).json(newTurf.rows[0]);
+        const allKits = await pool.query('SELECT * FROM kits WHERE available = TRUE ORDER BY name ASC');
+        res.json(allKits.rows);
     } catch (error) {
-        console.error("Add Turf Error:", error);
-        return sendError(res, 500, 'Failed to add new turf.');
+        console.error("Get Kits Error:", error);
+        return sendError(res, 500, 'Failed to fetch kits.');
     }
 });
 
-// 3. Bookings
-app.get('/api/bookings/slots/:turfId', async (req, res) => {
-    const { turfId } = req.params;
-    const { date } = req.query;
+// Add a new kit (requires authentication and image upload)
+app.post('/api/kits', authenticateToken, (req, res) => {
+    upload(req, res, async (err) => {
+        if (err) return sendError(res, 400, err);
+
+        const { name, description, price_per_hour } = req.body;
+        const owner_id = req.user.id;
+        if (!name || !description || !price_per_hour) {
+            return sendError(res, 400, 'Missing required fields: name, description, and price.');
+        }
+        
+        const imageUrl = req.file ? `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}` : null;
+
+        try {
+            const newKit = await pool.query(
+                'INSERT INTO kits (name, description, price_per_hour, image_url, available, owner_id) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *', [name, description, price_per_hour, imageUrl, true, owner_id]
+            );
+            res.status(201).json(newKit.rows[0]);
+        } catch (error) {
+            console.error("Add Kit Error:", error);
+            return sendError(res, 500, 'Failed to add new kit.');
+        }
+    });
+});
+
+// --- 4. Bookings ---
+
+// Get available slots for a specific turf on a given date
+app.get('/api/bookings/slots/:turf_id', async (req, res) => {
+    const { turf_id } = req.params;
+    const { date } = req.query; // Expects date in 'YYYY-MM-DD' format
+
     if (!date) {
-        return sendError(res, 400, 'Date query parameter is required.');
+        return sendError(res, 400, "A date query parameter is required.");
     }
+
     try {
-        const bookedSlotsResult = await pool.query(
-            "SELECT TO_CHAR(start_time, 'HH24:MI') as start_hour FROM bookings WHERE turf_id = $1 AND DATE(start_time) = $2",
-            [turfId, date]
+        // Get bookings for the specified day
+        const bookingsResult = await pool.query(
+            "SELECT start_time FROM bookings WHERE turf_id = $1 AND start_time::date = $2", [turf_id, date]
         );
-        const bookedHours = new Set(bookedSlotsResult.rows.map(row => row.start_hour));
-        const allSlots = [];
-        for (let i = 8; i < 22; i++) {
-            const time24h = `${String(i).padStart(2, '0')}:00`;
-            const displayHour = i % 12 === 0 ? 12 : i % 12;
-            const period = i >= 12 ? 'PM' : 'AM';
-            allSlots.push({
-                time: `${displayHour}:00 ${period}`,
-                full_time: time24h,
-                available: !bookedHours.has(time24h)
+        const bookedHours = bookingsResult.rows.map(b => new Date(b.start_time).getHours());
+        
+        // Generate all possible 1-hour slots for a day (e.g., 6 AM to 11 PM)
+        const slots = [];
+        for (let hour = 6; hour < 24; hour++) {
+            slots.push({
+                time: `${hour % 12 === 0 ? 12 : hour % 12}:00 ${hour < 12 || hour === 24 ? 'AM' : 'PM'}`,
+                full_time: `${String(hour).padStart(2, '0')}:00`, // For backend use
+                available: !bookedHours.includes(hour)
             });
         }
-        res.json({ date, slots: allSlots });
+        res.json({ slots });
     } catch (error) {
         console.error("Get Slots Error:", error);
-        return sendError(res, 500, 'Internal server error.');
+        return sendError(res, 500, "Failed to fetch booking slots.");
     }
 });
 
-app.post('/api/bookings', authenticateToken, async (req, res) => {
-    const { turf_id, start_time, end_time, total_price, rented_kit_ids } = req.body;
-    const user_id = req.user.id;
-    if (!turf_id || !start_time || !end_time || total_price === undefined) {
-        return sendError(res, 400, 'Missing required booking information.');
-    }
-    const client = await pool.connect();
-    try {
-        await client.query('BEGIN');
-        const bookingQuery = 'INSERT INTO bookings (user_id, turf_id, start_time, end_time, total_price, status) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *';
-        const newBooking = await client.query(bookingQuery, [user_id, turf_id, start_time, end_time, total_price, 'confirmed']);
-        const bookingId = newBooking.rows[0].id;
-        if (rented_kit_ids && rented_kit_ids.length > 0) {
-            for (const kit of rented_kit_ids) {
-                await client.query('INSERT INTO kit_rentals (booking_id, kit_id, rent_price) VALUES ($1, $2, $3)', [bookingId, kit.id, kit.price_per_hour]);
-            }
-        }
-        await client.query('COMMIT');
-        res.status(201).json(newBooking.rows[0]);
-    } catch (error) {
-        await client.query('ROLLBACK');
-        console.error("Booking Creation Error:", error);
-        if (error.code === '23505') {
-            return sendError(res, 409, 'This time slot is already booked.');
-        }
-        return sendError(res, 500, 'Internal server error while creating booking.');
-    } finally {
-        client.release();
-    }
-});
-
+// Get all bookings for the currently logged-in user
 app.get('/api/my-bookings', authenticateToken, async (req, res) => {
     const user_id = req.user.id;
     try {
-        const userBookings = await pool.query(
-            `SELECT b.id, b.start_time, b.status, b.total_price, t.name as turf_name, t.location as turf_location, t.image_url
+        const bookings = await pool.query(
+            `SELECT b.id, b.start_time, b.total_price, t.name as turf_name, t.image_url
              FROM bookings b
              JOIN turfs t ON b.turf_id = t.id
              WHERE b.user_id = $1
              ORDER BY b.start_time DESC`,
             [user_id]
         );
-        res.json(userBookings.rows);
+        res.json(bookings.rows);
     } catch (error) {
         console.error("Get My Bookings Error:", error);
-        return sendError(res, 500, 'Internal server error.');
+        return sendError(res, 500, "Failed to fetch your bookings.");
     }
 });
 
-// 4. Kits
-app.get('/api/kits', async (req, res) => {
-    try {
-        const availableKits = await pool.query('SELECT * FROM kits WHERE available = TRUE ORDER BY name');
-        res.json(availableKits.rows);
-    } catch (error) {
-        console.error("Get Kits Error:", error);
-        return sendError(res, 500, 'Internal server error while fetching kits.');
-    }
-});
+// Create a new booking
+app.post('/api/bookings', authenticateToken, async (req, res) => {
+    const user_id = req.user.id;
+    const { turf_id, start_time, total_price } = req.body;
 
-app.post('/api/kits', authenticateToken, async (req, res) => {
-    const { name, description, price_per_hour, image_url } = req.body;
-    if (!name || !description || !price_per_hour) {
-        return sendError(res, 400, 'Missing required fields: name, description, and price_per_hour.');
+    if (!turf_id || !start_time || !total_price) {
+        return sendError(res, 400, "Missing required booking details.");
     }
+
     try {
-        const newKit = await pool.query(
-            'INSERT INTO kits (name, description, price_per_hour, image_url, available) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-            [name, description, price_per_hour, image_url || null, true]
+        const startTimeObj = new Date(start_time);
+        const endTimeObj = new Date(startTimeObj.getTime() + 60 * 60 * 1000); // Assume 1-hour slots
+
+        const newBooking = await pool.query(
+            `INSERT INTO bookings (user_id, turf_id, start_time, end_time, total_price)
+             VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+            [user_id, turf_id, startTimeObj, endTimeObj, total_price]
         );
-        res.status(201).json(newKit.rows[0]);
+        res.status(201).json(newBooking.rows[0]);
     } catch (error) {
-        console.error("Add Kit Error:", error);
-        return sendError(res, 500, 'Failed to add new kit.');
+        if(error.code === '23505') { // unique_violation on (turf_id, start_time)
+            return sendError(res, 409, 'This time slot has already been booked.');
+        }
+        console.error("Create Booking Error:", error);
+        return sendError(res, 500, "Failed to create booking.");
     }
 });
 
-// 5. Matches
+
+// --- 5. Matches ---
+
+// Get all open matches
 app.get('/api/matches', async (req, res) => {
     try {
-        const openMatches = await pool.query(
-            `SELECT 
-                m.id, m.sport, m.match_time, m.players_needed, m.contribution_per_person, m.status,
-                t.name as turf_name, t.location as turf_location,
-                u.name as organizer_name,
-                (SELECT COUNT(*) FROM match_participants mp WHERE mp.match_id = m.id) as current_players
-             FROM matches m
-             JOIN turfs t ON m.turf_id = t.id
-             JOIN users u ON m.organizer_id = u.id
-             WHERE m.status = 'open'
-             ORDER BY m.match_time ASC`
-        );
-        res.json(openMatches.rows);
+        // This query joins matches with turfs and counts current participants
+        const query = `
+            SELECT 
+                m.id, m.sport, m.players_needed, m.contribution_per_person, m.match_time,
+                t.name as turf_name,
+                COUNT(mp.id) as current_players
+            FROM matches m
+            JOIN turfs t ON m.turf_id = t.id
+            LEFT JOIN match_participants mp ON m.id = mp.match_id
+            GROUP BY m.id, t.name
+            HAVING COUNT(mp.id) < m.players_needed
+            ORDER BY m.match_time ASC;
+        `;
+        const matches = await pool.query(query);
+        res.json(matches.rows);
     } catch (error) {
         console.error("Get Matches Error:", error);
-        return sendError(res, 500, 'Internal server error while fetching matches.');
+        return sendError(res, 500, "Failed to fetch matches.");
     }
 });
 
+// Create a new match
 app.post('/api/matches', authenticateToken, async (req, res) => {
-    const { turf_id, sport, match_time, players_needed, contribution_per_person } = req.body;
+    const { turf_id, sport, players_needed, contribution_per_person, match_time } = req.body;
     const organizer_id = req.user.id;
 
-    if (!turf_id || !sport || !match_time || !players_needed || !contribution_per_person) {
-        return sendError(res, 400, 'Missing required fields to create a match.');
+    if (!turf_id || !sport || !players_needed || !match_time) {
+        return sendError(res, 400, "Missing required fields.");
+    }
+
+    const matchTimeDate = new Date(match_time);
+    if (isNaN(matchTimeDate.getTime())) {
+        return sendError(res, 400, "Invalid match_time format. Use ISO 8601 format (e.g., YYYY-MM-DDTHH:MM:SSZ).");
     }
 
     try {
         const newMatch = await pool.query(
-            'INSERT INTO matches (organizer_id, turf_id, sport, match_time, players_needed, contribution_per_person, status) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
-            [organizer_id, turf_id, sport, match_time, players_needed, contribution_per_person, 'open']
+            `INSERT INTO matches (turf_id, sport, organizer_id, players_needed, contribution_per_person, match_time)
+             VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+            [turf_id, sport, organizer_id, players_needed, contribution_per_person, matchTimeDate]
+        );
+        // Automatically add the organizer as the first participant
+        await pool.query(
+            'INSERT INTO match_participants (match_id, user_id) VALUES ($1, $2)',
+            [newMatch.rows[0].id, organizer_id]
         );
         res.status(201).json(newMatch.rows[0]);
     } catch (error) {
         console.error("Create Match Error:", error);
-        return sendError(res, 500, 'Failed to create the match.');
+        return sendError(res, 500, 'Failed to create match.');
     }
 });
 
-app.post('/api/matches/:matchId/join', authenticateToken, async (req, res) => {
-    const { matchId } = req.params;
+// Join an existing match
+app.post('/api/matches/:id/join', authenticateToken, async (req, res) => {
+    const { id: match_id } = req.params;
     const user_id = req.user.id;
 
-    const client = await pool.connect();
     try {
-        await client.query('BEGIN');
-
-        const matchResult = await client.query('SELECT * FROM matches WHERE id = $1 FOR UPDATE', [matchId]);
-        if (matchResult.rows.length === 0) {
-            await client.query('ROLLBACK');
-            return sendError(res, 404, 'Match not found.');
-        }
-
-        const match = matchResult.rows[0];
-        if (match.status !== 'open') {
-            await client.query('ROLLBACK');
-            return sendError(res, 400, `This match is already ${match.status}.`);
-        }
-
-        await client.query('INSERT INTO match_participants (match_id, user_id) VALUES ($1, $2)', [matchId, user_id]);
-        
-        const participantsResult = await client.query('SELECT COUNT(*) FROM match_participants WHERE match_id = $1', [matchId]);
-        const currentPlayers = parseInt(participantsResult.rows[0].count, 10);
-
-        if (currentPlayers >= match.players_needed) {
-            await client.query("UPDATE matches SET status = 'full' WHERE id = $1", [matchId]);
-        }
-
-        await client.query('COMMIT');
-        res.status(200).json({ message: 'Successfully joined the match.' });
+        // In a real application, you'd add more logic here,
+        // like checking if the match is full before attempting to insert.
+        const result = await pool.query(
+            'INSERT INTO match_participants (match_id, user_id) VALUES ($1, $2) RETURNING *',
+            [match_id, user_id]
+        );
+        res.status(201).json({ message: "Successfully joined match", data: result.rows[0] });
     } catch (error) {
-        await client.query('ROLLBACK');
-        console.error("Join Match Error:", error);
-        if (error.code === '23505') {
-            return sendError(res, 409, 'You have already joined this match.');
+        if (error.code === '23505') { // unique_violation on (match_id, user_id)
+            return sendError(res, 409, "You have already joined this match.");
         }
-        return sendError(res, 500, 'Internal server error while joining match.');
-    } finally {
-        client.release();
+        console.error("Join Match Error:", error);
+        return sendError(res, 500, "Failed to join match.");
     }
 });
 
 // --- Start Server ---
 app.listen(port, () => {
-  console.log(`🚀 Server listening at http://localhost:${port}`);
+    console.log(`🚀 Server listening at http://localhost:${port}`);
 });

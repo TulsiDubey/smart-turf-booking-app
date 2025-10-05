@@ -7,7 +7,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 // 🚨 IMPORTANT: Replace 'localhost' with your computer's local IP address.
 // On Windows, run `ipconfig` in Command Prompt. On Mac, run `ifconfig` in Terminal.
 // Your phone and computer must be on the same Wi-Fi network.
-const API_URL = 'http://192.168.137.155:3000';
+const API_URL = 'http://192.168.75.155:3000';
 
 export default function LoginScreen() {
     const [isLogin, setIsLogin] = useState(true);
