@@ -5,8 +5,7 @@ import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 // FIXED: Changed to a default import
 import AddEntityForm from '../../components/AddEntityForm';
-
-const API_URL = 'http://192.168.75.155:3000';
+import { API_URL } from '../../config';
 
 export default function AddTurfScreen() {
   const [isLoading, setIsLoading] = useState(false);

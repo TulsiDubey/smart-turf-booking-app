@@ -3,11 +3,13 @@ import React, { useState } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator, Alert } from 'react-native';
 import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-
+// At the top
+import { API_URL } from '../config';
+// The const API_URL = '...'; line can be removed.
 // 🚨 IMPORTANT: Replace 'localhost' with your computer's local IP address.
 // On Windows, run `ipconfig` in Command Prompt. On Mac, run `ifconfig` in Terminal.
 // Your phone and computer must be on the same Wi-Fi network.
-const API_URL = 'http://192.168.75.155:3000';
+
 
 export default function LoginScreen() {
     const [isLogin, setIsLogin] = useState(true);
